@@ -264,4 +264,28 @@ private:
     std::stringstream m_istream;
 };
 
+
+
+template<char... digits>
+struct conv2bin;
+
+template<char high, char... digits>
+struct conv2bin<high, digits...> {
+    static_assert(high == '0' || high == '1', "no bin num!");
+    static uint8_t const value = (high - '0') * (1 << sizeof...(digits)) +
+                                 conv2bin<digits...>::value;
+};
+
+template<char high>
+struct conv2bin<high> {
+    static_assert(high == '0' || high == '1', "no bin num!");
+    static uint8_t const value = (high - '0');
+};
+
+// Binary number literal (https://stackoverflow.com/a/538101/2795046).
+template<char... digits>
+constexpr uint8_t operator "" _b() {
+    return conv2bin<digits...>::value;
+}
+
 #endif

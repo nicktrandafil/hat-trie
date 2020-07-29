@@ -3,8 +3,9 @@ cmake_minimum_required(VERSION 3.5)
 project(tsl_hat_trie_tests)
 
 add_executable(tsl_hat_trie_tests "main.cpp" 
-                                  "trie_map_tests.cpp" 
-                                  "trie_set_tests.cpp")
+                                  "trie_map_tests.cpp"
+                                  "trie_set_tests.cpp"
+                                  "uint_n_tests.cpp")
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     target_compile_options(tsl_hat_trie_tests PRIVATE -std=c++11 -Werror -Wall -Wextra -Wold-style-cast -O3 -DTSL_DEBUG)

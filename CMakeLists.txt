@@ -13,7 +13,8 @@ target_sources(tsl_hat_trie INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include/tsl/a
                                       "${CMAKE_CURRENT_SOURCE_DIR}/include/tsl/array-hash/array_set.h"
                                       "${CMAKE_CURRENT_SOURCE_DIR}/include/tsl/htrie_hash.h"
                                       "${CMAKE_CURRENT_SOURCE_DIR}/include/tsl/htrie_map.h"
-                                      "${CMAKE_CURRENT_SOURCE_DIR}/include/tsl/htrie_set.h")
+                                      "${CMAKE_CURRENT_SOURCE_DIR}/include/tsl/htrie_set.h"
+                                      "${CMAKE_CURRENT_SOURCE_DIR}/include/tsl/uint_n.h")
 
 
 if(${CMAKE_VERSION} VERSION_GREATER "3.7") 

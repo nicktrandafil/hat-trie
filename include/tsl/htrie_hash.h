@@ -40,6 +40,7 @@
 #include <vector>
 #include "array-hash/array_map.h"
 #include "array-hash/array_set.h"
+#include "uint_n.h"
 
 
 /*
@@ -135,6 +136,7 @@ private:
     
     static const std::size_t ALPHABET_SIZE = 
                             std::numeric_limits<typename std::make_unsigned<CharT>::type>::max() + 1;
+    using bitset_type = uint_n<ALPHABET_SIZE>;
     
                             
 public:
@@ -288,7 +290,7 @@ private:
         trie_node* m_parent_node;
     };
     
-    // Give the position in trie_node::m_children corresponding to the character c
+    // Give the position in trie_node::m_bitset corresponding to the character c
     static std::size_t as_position(CharT c) noexcept {
         return static_cast<std::size_t>(static_cast<typename std::make_unsigned<CharT>::type>(c));
     }
@@ -296,35 +298,41 @@ private:
     class trie_node: public anode {
     public:
         trie_node(): anode(anode::node_type::TRIE_NODE),
-                     m_value_node(nullptr), m_children() 
+                     m_value_node(nullptr), m_bitset(), m_children()
         {
         }
         
         trie_node(const trie_node& other): anode(anode::node_type::TRIE_NODE, other.m_child_of_char),
-                                           m_value_node(nullptr), m_children()
+                                           m_value_node(nullptr), m_bitset(), m_children()
         {
             if(other.m_value_node != nullptr) {
                 m_value_node = make_unique<value_node>(*other.m_value_node);
             }
             
+            m_bitset = other.m_bitset;
+
             // TODO avoid recursion
+            m_children.resize(other.m_children.size());
             for(std::size_t ichild = 0; ichild < other.m_children.size(); ichild++) {
-                if(other.m_children[ichild] != nullptr) {
-                    if(other.m_children[ichild]->is_hash_node()) {
-                        m_children[ichild] = make_unique<hash_node>(other.m_children[ichild]->as_hash_node());
-                    }
-                    else {
-                        m_children[ichild] = make_unique<trie_node>(other.m_children[ichild]->as_trie_node());
-                    }
-                    
-                    m_children[ichild]->m_parent_node = this;
+                if(other.m_children[ichild]->is_hash_node()) {
+                    m_children[ichild] = make_unique<hash_node>(other.m_children[ichild]->as_hash_node());
                 }
+                else {
+                    m_children[ichild] = make_unique<trie_node>(other.m_children[ichild]->as_trie_node());
+                }
+
+                m_children[ichild]->m_parent_node = this;
             }
         }
         
         trie_node(trie_node&& other) = delete;
         trie_node& operator=(const trie_node& other) = delete;
         trie_node& operator=(trie_node&& other) = delete;
+
+        size_t as_compressed_position(CharT c) const noexcept {
+            auto const mask = --(bitset_type(1) << as_position(c));
+            return popcount(m_bitset & mask);
+        }
         
         /**
          * Return nullptr if none.
@@ -334,16 +342,14 @@ private:
         }
         
         const anode* first_child() const noexcept {
-            for(std::size_t ichild = 0; ichild < m_children.size(); ichild++) {
-                if(m_children[ichild] != nullptr) {
-                    return m_children[ichild].get();
-                }
+            if (!m_children.empty()) {
+                return m_children.front().get();
             }
             
             return nullptr;
         }
-        
-        
+
+
         /**
          * Get the next_child that come after current_child. Return nullptr if no next child.
          */
@@ -353,16 +359,13 @@ private:
         
         const anode* next_child(const anode& current_child) const noexcept {
             tsl_ht_assert(current_child.parent() == this);
-            
-            for(std::size_t ichild = as_position(current_child.child_of_char()) + 1; 
-                ichild < m_children.size(); 
-                ichild++) 
-            {
-                if(m_children[ichild] != nullptr) {
-                    return m_children[ichild].get();
-                }
+            tsl_ht_assert(child_exists(current_child.child_of_char()));
+
+            auto const pos = as_compressed_position(current_child.child_of_char()) + 1;
+            if (pos < m_children.size()) {
+                return m_children[pos].get();
             }
-            
+
             return nullptr;
         }
         
@@ -394,38 +397,55 @@ private:
         
         
         size_type nb_children() const noexcept {
-            return std::count_if(m_children.cbegin(), m_children.cend(), 
-                                 [](const std::unique_ptr<anode>& n) { return n != nullptr; });
+            return m_children.size();
         }
         
         bool empty() const noexcept {
-            return std::all_of(m_children.cbegin(), m_children.cend(), 
-                               [](const std::unique_ptr<anode>& n) { return n == nullptr; });
+            return m_children.empty();
         }
         
         std::unique_ptr<anode>& child(CharT for_char) noexcept {
-            return m_children[as_position(for_char)];
+            tsl_ht_assert(child_exists(for_char));
+            return m_children[as_compressed_position(for_char)];
         }
         
         const std::unique_ptr<anode>& child(CharT for_char) const noexcept {
-            return m_children[as_position(for_char)];
+            tsl_ht_assert(child_exists(for_char));
+            return m_children[as_compressed_position(for_char)];
+        }
+
+        bool child_exists(CharT for_char) const noexcept {
+            return m_bitset.test(as_position(for_char));
         }
         
-        typename std::array<std::unique_ptr<anode>, ALPHABET_SIZE>::iterator begin() noexcept {
+        typename std::vector<std::unique_ptr<anode>>::iterator begin() noexcept {
             return m_children.begin();
         }
         
-        typename std::array<std::unique_ptr<anode>, ALPHABET_SIZE>::iterator end() noexcept {
+        typename std::vector<std::unique_ptr<anode>>::iterator end() noexcept {
             return m_children.end();
         }
-        
+
         void set_child(CharT for_char, std::unique_ptr<anode> child) noexcept {
-            if(child != nullptr) {
-                child->m_child_of_char = for_char;
-                child->m_parent_node = this;
-            }
-            
-            m_children[as_position(for_char)] = std::move(child);
+            tsl_ht_assert(child != nullptr);
+            tsl_ht_assert(child_exists(for_char));
+            child->m_child_of_char = for_char;
+            child->m_parent_node = this;
+            m_children[as_compressed_position(for_char)] = std::move(child);
+        }
+
+        void insert_child(CharT for_char, std::unique_ptr<anode> child) {
+            tsl_ht_assert(!child_exists(for_char));
+            child->m_child_of_char = for_char;
+            child->m_parent_node = this;
+            m_children.insert(std::next(m_children.begin(), as_compressed_position(for_char)), std::move(child));
+            m_bitset.set(as_position(for_char));
+        }
+
+        void erase_child(CharT for_char) noexcept {
+            tsl_ht_assert(child_exists(for_char));
+            m_children.erase(std::next(m_children.begin(), as_compressed_position(for_char)));
+            m_bitset.unset(as_position(for_char));
         }
         
         std::unique_ptr<value_node>& val_node() noexcept {
@@ -441,15 +461,25 @@ private:
         std::unique_ptr<value_node> m_value_node;
         
         /**
-         * Each character CharT corresponds to one position in the array. To convert a character
-         * to a position use the as_position method.
-         * 
-         * TODO Try to reduce the size of m_children with a hash map, linear/binary search on array, ...
-         * TODO Store number of non-null values in m_children. Check if we can store this value in the alignment
-         * space as we don't want the node to get bigger (empty() and nb_children() are rarely used so it is
-         * not an important variable).
+         * The children representation is described in the paper:
+         * "P. Bagwell: Ideal Hash Trees. EPFL Technical Report",
+         * paragraph "ESSENTIALS OF THE ARRAY MAPPED TRIE".
+         *
+         * The bitset is used to represent the existence of each character CharT and
+         * the m_children contains pointers to the existing nodes. A one-bit in the bitset represents
+         * a non null node, while a zero-bit a null node. The pointers in the m_children are kept in sorted order
+         * and correspond to the order of each one-bit in the bitset.
+         * Finding the node for a character, requires finding its' corresponding bit in the bitset and then
+         * counting the one-bits below it in the set to compute an index into the m_children.
+         *
          */
-        std::array<std::unique_ptr<anode>, ALPHABET_SIZE> m_children;
+        bitset_type m_bitset;
+
+        /**
+         * Contain only non null nodes. Contain as many nodes as many bits are set in `m_bitset`.
+         * To convert a character to a position use the as_compressed_position method.
+         */
+        std::vector<std::unique_ptr<anode>> m_children;
     };
     
 
@@ -1061,7 +1091,7 @@ public:
             if(current_node->is_trie_node()) {
                 trie_node* tnode = &current_node->as_trie_node();
                 
-                if(tnode->child(prefix[iprefix]) == nullptr) {
+                if(!tnode->child_exists(prefix[iprefix])) {
                     return 0;
                 }
                 else {
@@ -1081,7 +1111,7 @@ public:
             if(parent != nullptr) {
                 const size_type nb_erased = size_descendants(current_node->as_trie_node());
                 
-                parent->set_child(current_node->child_of_char(), nullptr);
+                parent->erase_child(current_node->child_of_char());
                 m_nb_elements -= nb_erased;
                 
                 if(parent->empty()) {
@@ -1361,7 +1391,7 @@ private:
             if(current_node->is_trie_node()) {
                 trie_node& tnode = current_node->as_trie_node();
                 
-                if(tnode.child(key[ikey]) != nullptr) {
+                if(tnode.child_exists(key[ikey])) {
                     current_node = tnode.child(key[ikey]).get();
                 }
                 else {
@@ -1369,11 +1399,11 @@ private:
                     auto insert_it = hnode->array_hash().emplace_ks(key + ikey + 1, key_size - ikey - 1, 
                                                                     std::forward<ValueArgs>(value_args)...);
                     
-                    tnode.set_child(key[ikey], std::move(hnode));
+                    tnode.insert_child(key[ikey], std::move(hnode));
                     m_nb_elements++;
                     
                     
-                    return std::make_pair(iterator(tnode.child(key[ikey])->as_hash_node(), 
+                    return std::make_pair(iterator(tnode.child(key[ikey])->as_hash_node(),
                                                    insert_it.first), true);
                 }
             }
@@ -1420,7 +1450,7 @@ private:
                 
                 parent->set_child(child_of_char, std::move(new_node));
                 
-                return insert_impl(*parent->child(child_of_char), 
+                return insert_impl(*parent->child(child_of_char),
                                    key, key_size, std::forward<ValueArgs>(value_args)...);
             }
         }
@@ -1488,7 +1518,7 @@ private:
             m_root.reset(nullptr);
         }
         else if(parent->val_node() != nullptr || parent->nb_children() > 1) {
-            parent->child(empty_node.child_of_char()).reset(nullptr);
+            parent->erase_child(empty_node.child_of_char());
         }
         else if(parent->parent() == nullptr) {
             tsl_ht_assert(m_root.get() == empty_node.parent());
@@ -1528,7 +1558,7 @@ private:
             if(current_node->is_trie_node()) {
                 const trie_node* tnode = &current_node->as_trie_node();
                 
-                if(tnode->child(key[ikey]) == nullptr) {
+                if(!tnode->child_exists(key[ikey])) {
                     return cend();
                 }
                 else {
@@ -1585,7 +1615,7 @@ private:
                     longest_found_prefix = const_iterator(tnode);
                 }
                 
-                if(tnode.child(value[ivalue]) == nullptr) {
+                if(!tnode.child_exists(value[ivalue])) {
                     return longest_found_prefix;
                 }
                 else {
@@ -1650,7 +1680,7 @@ private:
             if(current_node->is_trie_node()) {
                 const trie_node* tnode = &current_node->as_trie_node();
                 
-                if(tnode->child(prefix[iprefix]) == nullptr) {
+                if(!tnode->child_exists(prefix[iprefix])) {
                     return std::make_pair(prefix_cend(), prefix_cend());
                 }
                 else {
@@ -1833,7 +1863,7 @@ private:
     hash_node& get_hash_node_for_char(const std::array<size_type, ALPHABET_SIZE>& first_char_count, 
                                       trie_node& tnode, CharT for_char)
     {
-        if(tnode.child(for_char) == nullptr) {
+        if(!tnode.child_exists(for_char)) {
             const size_type nb_buckets = 
                             size_type(
                                 std::ceil(float(first_char_count[as_position(for_char)] + 
@@ -1841,8 +1871,8 @@ private:
                                           / m_max_load_factor
                             ));
                             
-            tnode.set_child(for_char, 
-                            make_unique<hash_node>(nb_buckets, m_hash, m_max_load_factor));
+            tnode.insert_child(for_char,
+                               make_unique<hash_node>(nb_buckets, m_hash, m_max_load_factor));
         }
         
         return tnode.child(for_char)->as_hash_node();
@@ -2010,7 +2040,7 @@ private:
                     m_nb_elements += hnode->array_hash().size();
                     
                     trie_node* current_node = insert_prefix_trie_nodes(str_buffer.data(), str_size - 1);
-                    current_node->set_child(str_buffer[str_size - 1], std::move(hnode)); 
+                    current_node->insert_child(str_buffer[str_size - 1], std::move(hnode));
                 }
             }
             else {
@@ -2028,8 +2058,8 @@ private:
                     
         trie_node* current_node = &m_root->as_trie_node();
         for(std::size_t iprefix = 0; iprefix < prefix_size; iprefix++) {
-            if(current_node->child(prefix[iprefix]) == nullptr) {
-                current_node->set_child(prefix[iprefix], make_unique<trie_node>());
+            if(!current_node->child_exists(prefix[iprefix])) {
+                current_node->insert_child(prefix[iprefix], make_unique<trie_node>());
             }
             
             current_node = &current_node->child(prefix[iprefix])->as_trie_node();
